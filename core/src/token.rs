@@ -42,6 +42,13 @@ pub struct Token {
     pub timestamp: Instant,
 }
 
+#[derive(Clone, Debug)]
+pub struct Code {
+    pub code: String,
+    pub scopes: Vec<String>,
+    pub timestamp: Instant,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TokenData {
@@ -51,11 +58,29 @@ struct TokenData {
     scope: Vec<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodeData {
+    code: String,
+}
+
 impl TokenProvider {
     fn find_token(&self, scopes: Vec<&str>) -> Option<usize> {
         self.lock(|inner| {
             (0..inner.tokens.len()).find(|&i| inner.tokens[i].in_scopes(scopes.clone()))
         })
+    }
+
+    pub fn add_token(&self, access_token: String) -> () {
+        let token = Token {
+            access_token: access_token,
+            expires_in: Duration::from_secs(500),
+            token_type: "Bearer".to_owned(),
+            scopes: vec!["streaming".to_owned(), "playlist-read".to_owned()],
+            timestamp: Instant::now(),
+        };
+        self.lock(|inner| inner.tokens.push(token.clone()));
+        ()
     }
 
     // scopes must be comma-separated
@@ -70,6 +95,7 @@ impl TokenProvider {
             if cached_token.is_expired() {
                 self.lock(|inner| inner.tokens.remove(index));
             } else {
+                trace!("Using cached_token {:?}", cached_token);
                 return Ok(cached_token);
             }
         }
@@ -88,13 +114,53 @@ impl TokenProvider {
         let request = self.session().mercury().get(query_uri)?;
         let response = request.await?;
         let data = response.payload.first().ok_or(TokenError::Empty)?.to_vec();
-        let token = Token::from_json(String::from_utf8(data)?)?;
+        let json = String::from_utf8(data)?;
+        debug!("Got json: {:#?}", json);
+        let token = Token::from_json(json)?;
         trace!("Got token: {:#?}", token);
         self.lock(|inner| inner.tokens.push(token.clone()));
         Ok(token)
     }
+
+    pub async fn get_code(&self, scopes: &str) -> Result<Code, Error> {
+        let client_id = self.session().client_id();
+        if client_id.is_empty() {
+            return Err(Error::invalid_argument("Client ID cannot be empty"));
+        }
+
+        trace!(
+            "Requested token in scopes {:?} unavailable or expired, requesting new token.",
+            scopes
+        );
+
+        let query_uri = format!(
+            "hm://keymaster/code/authenticated?scope={}&client_id={}&device_id={}",
+            scopes,
+            client_id,
+            self.session().device_id(),
+        );
+        let request = self.session().mercury().get(query_uri)?;
+        let response = request.await?;
+        let data = response.payload.first().ok_or(TokenError::Empty)?.to_vec();
+        let json = String::from_utf8(data)?;
+        debug!("Got json: {:#?}", json);
+        let code = Code::from_json(json, scopes)?;
+        trace!("Got code: {:#?}", code);
+        Ok(code)
+    }
 }
 
+impl Code {
+    pub fn from_json(body: String, scopes: &str) -> Result<Self, Error> {
+        let scopes = scopes.split(',').map(|v| v.to_string()).collect();
+        let data: CodeData = serde_json::from_slice(body.as_ref())?;
+        Ok(Self {
+            code: data.code,
+            scopes: scopes,
+            timestamp: Instant::now(),
+        })
+    }
+}
 impl Token {
     const EXPIRY_THRESHOLD: Duration = Duration::from_secs(10);
 
@@ -123,6 +189,7 @@ impl Token {
     }
 
     pub fn in_scopes(&self, scopes: Vec<&str>) -> bool {
+        trace!("Checking for {:?} in token {:?}", scopes, self);
         for s in scopes {
             if !self.in_scope(s) {
                 return false;

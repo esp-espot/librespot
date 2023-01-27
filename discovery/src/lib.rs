@@ -86,6 +86,8 @@ impl Builder {
                 device_type: DeviceType::default(),
                 device_id: device_id.into(),
                 client_id: client_id.into(),
+                //token_type: "accesstoken".into(),
+                token_type: "default".into(),
             },
             port: 0,
             zeroconf_ip: vec![],
@@ -101,6 +103,12 @@ impl Builder {
     /// Sets the device type which is visible as icon in other Spotify clients. Default is `Speaker`.
     pub fn device_type(mut self, device_type: DeviceType) -> Self {
         self.server_config.device_type = device_type;
+        self
+    }
+
+    /// Sets the token type which it will request from clients.
+    pub fn token_type(mut self, token_type: String) -> Self {
+        self.server_config.token_type = token_type;
         self
     }
 

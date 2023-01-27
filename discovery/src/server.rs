@@ -37,6 +37,7 @@ pub struct Config {
     pub device_type: DeviceType,
     pub device_id: String,
     pub client_id: String,
+    pub token_type: String,
 }
 
 struct RequestHandler {
@@ -87,7 +88,7 @@ impl RequestHandler {
             "groupStatus": "NONE",
             // valid value documented & seen in the wild: "accesstoken"
             // Using it will cause clients to fail to connect.
-            "tokenType": "default",
+            "tokenType": (self.config.token_type),
             "clientID": (self.config.client_id),
             "productID": 0,
             // Other known scope: client-authorization-universal
@@ -116,70 +117,81 @@ impl RequestHandler {
             .as_ref();
 
         let blob_key = "blob";
-        let encrypted_blob = params
+        let blob = params
             .get(blob_key)
-            .ok_or(DiscoveryError::ParamsError(blob_key))?;
+            .ok_or(DiscoveryError::ParamsError(blob_key))?
+            .as_ref();
 
-        let clientkey_key = "clientKey";
-        let client_key = params
-            .get(clientkey_key)
-            .ok_or(DiscoveryError::ParamsError(clientkey_key))?;
+        let type_key = "tokenType";
+        let token_type = params
+            .get(type_key)
+            .ok_or(DiscoveryError::ParamsError(type_key))?
+            .as_ref();
 
-        let encrypted_blob = base64::decode(encrypted_blob.as_bytes())?;
+        let credentials = if token_type == "accesstoken".to_string() {
+            Credentials::with_access_token(blob)
+        } else {
 
-        let client_key = base64::decode(client_key.as_bytes())?;
-        let shared_key = self.keys.shared_secret(&client_key);
+            let clientkey_key = "clientKey";
+            let client_key = params
+                .get(clientkey_key)
+                .ok_or(DiscoveryError::ParamsError(clientkey_key))?;
 
-        let encrypted_blob_len = encrypted_blob.len();
-        if encrypted_blob_len < 16 {
-            return Err(DiscoveryError::HmacError(encrypted_blob.to_vec()).into());
-        }
+            let encrypted_blob = base64::decode(blob.as_bytes())?;
 
-        let iv = &encrypted_blob[0..16];
-        let encrypted = &encrypted_blob[16..encrypted_blob_len - 20];
-        let cksum = &encrypted_blob[encrypted_blob_len - 20..encrypted_blob_len];
+            let client_key = base64::decode(client_key.as_bytes())?;
+            let shared_key = self.keys.shared_secret(&client_key);
 
-        let base_key = Sha1::digest(shared_key);
-        let base_key = &base_key[..16];
+            let encrypted_blob_len = encrypted_blob.len();
+            if encrypted_blob_len < 16 {
+                return Err(DiscoveryError::HmacError(encrypted_blob.to_vec()).into());
+            }
 
-        let checksum_key = {
-            let mut h = Hmac::<Sha1>::new_from_slice(base_key)
+            let iv = &encrypted_blob[0..16];
+            let encrypted = &encrypted_blob[16..encrypted_blob_len - 20];
+            let cksum = &encrypted_blob[encrypted_blob_len - 20..encrypted_blob_len];
+
+            let base_key = Sha1::digest(shared_key);
+            let base_key = &base_key[..16];
+
+            let checksum_key = {
+                let mut h = Hmac::<Sha1>::new_from_slice(base_key)
+                    .map_err(|_| DiscoveryError::HmacError(base_key.to_vec()))?;
+                h.update(b"checksum");
+                h.finalize().into_bytes()
+            };
+
+            let encryption_key = {
+                let mut h = Hmac::<Sha1>::new_from_slice(base_key)
+                    .map_err(|_| DiscoveryError::HmacError(base_key.to_vec()))?;
+                h.update(b"encryption");
+                h.finalize().into_bytes()
+            };
+
+            let mut h = Hmac::<Sha1>::new_from_slice(&checksum_key)
                 .map_err(|_| DiscoveryError::HmacError(base_key.to_vec()))?;
-            h.update(b"checksum");
-            h.finalize().into_bytes()
+            h.update(encrypted);
+            if h.verify_slice(cksum).is_err() {
+                warn!("Login error for user {:?}: MAC mismatch", username);
+                let result = json!({
+                    "status": 102,
+                    "spotifyError": 1,
+                    "statusString": "ERROR-MAC"
+                });
+
+                let body = result.to_string();
+                return Ok(Response::new(Body::from(body)));
+            }
+
+            let decrypted = {
+                let mut data = encrypted.to_vec();
+                let mut cipher = Aes128Ctr::new_from_slices(&encryption_key[0..16], iv)
+                    .map_err(DiscoveryError::AesError)?;
+                cipher.apply_keystream(&mut data);
+                data
+            };
+            Credentials::with_blob(username, decrypted, &self.config.device_id)?
         };
-
-        let encryption_key = {
-            let mut h = Hmac::<Sha1>::new_from_slice(base_key)
-                .map_err(|_| DiscoveryError::HmacError(base_key.to_vec()))?;
-            h.update(b"encryption");
-            h.finalize().into_bytes()
-        };
-
-        let mut h = Hmac::<Sha1>::new_from_slice(&checksum_key)
-            .map_err(|_| DiscoveryError::HmacError(base_key.to_vec()))?;
-        h.update(encrypted);
-        if h.verify_slice(cksum).is_err() {
-            warn!("Login error for user {:?}: MAC mismatch", username);
-            let result = json!({
-                "status": 102,
-                "spotifyError": 1,
-                "statusString": "ERROR-MAC"
-            });
-
-            let body = result.to_string();
-            return Ok(Response::new(Body::from(body)));
-        }
-
-        let decrypted = {
-            let mut data = encrypted.to_vec();
-            let mut cipher = Aes128Ctr::new_from_slices(&encryption_key[0..16], iv)
-                .map_err(DiscoveryError::AesError)?;
-            cipher.apply_keystream(&mut data);
-            data
-        };
-
-        let credentials = Credentials::with_blob(username, decrypted, &self.config.device_id)?;
 
         self.tx.send(credentials)?;
 
@@ -212,9 +224,9 @@ impl RequestHandler {
             params.extend(query_params);
         }
 
-        if parts.method != Method::GET {
-            debug!("{:?} {:?} {:?}", parts.method, parts.uri.path(), params);
-        }
+        //if parts.method != Method::GET {
+        debug!("{:?} {:?} {:?}", parts.method, parts.uri.path(), params);
+        //}
 
         let body = hyper::body::to_bytes(body).await?;
 

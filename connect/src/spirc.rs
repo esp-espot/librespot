@@ -337,6 +337,12 @@ impl Spirc {
                 }),
         );
 
+		//let data: &Vec<u8> = credentials.auth_data.as_ref();
+		//let access_token = String::from_utf8(data.to_owned())?;
+		//session.token_provider().add_token(access_token);
+		//if credentials.auth_type == AuthenticationType::AUTHENTICATION_SPOTIFY_TOKEN {
+		//}
+
         // Connect *after* all message listeners are registered
         session.connect(credentials, true).await?;
 

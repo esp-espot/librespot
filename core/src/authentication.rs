@@ -65,6 +65,14 @@ impl Credentials {
         }
     }
 
+    pub fn with_auth_code(username: Option<String>, code: impl Into<String>) -> Self {
+        Self {
+            username: username,
+            auth_type: AuthenticationType::AUTHENTICATION_SPOTIFY_TOKEN,
+            auth_data: code.into().into_bytes(),
+        }
+    }
+
     pub fn with_blob(
         username: impl Into<String>,
         encrypted_blob: impl AsRef<[u8]>,

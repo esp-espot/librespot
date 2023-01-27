@@ -3,10 +3,14 @@ use std::env;
 use librespot::core::{authentication::Credentials, config::SessionConfig, session::Session};
 
 const SCOPES: &str =
-    "streaming,user-read-playback-state,user-modify-playback-state,user-read-currently-playing";
+    "streaming";
 
 #[tokio::main]
 async fn main() {
+    let mut builder = env_logger::Builder::new();
+    builder.parse_filters("libmdns=info,librespot=trace");
+    builder.init();
+    
     let mut session_config = SessionConfig::default();
 
     let args: Vec<_> = env::args().collect();
@@ -33,6 +37,18 @@ async fn main() {
         }
     };
     println!("Token: {:#?}", token);
+    
+    let code = session.token_provider().get_code(SCOPES).await.unwrap();
+    println!("Code: {:#?}", code);
+    
+    //let session = Session::new(session_config.clone(), None);
+    //let credentials = Credentials::with_auth_code(Some(username.to_string()), code.code);
+    //println!("Connecting with code..");
+    //match session.connect(credentials, false).await {
+        //Ok(()) => println!("Session username: {:#?}", session.username()),
+        //Err(e) => println!("Error connecting: {}", e),
+    //}
+    // Exchange code for access token using https://accounts.spotify.com
 
     // Now create a new session with that token.
     let session = Session::new(session_config, None);
