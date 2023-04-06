@@ -46,6 +46,8 @@ pub enum SessionError {
     IoError(#[from] io::Error),
     #[error("Session is not connected")]
     NotConnected,
+    #[error("Session lost connection to server (timeout)")]
+    Timeout,
     #[error("packet {0} unknown")]
     Packet(u8),
 }
@@ -56,6 +58,7 @@ impl From<SessionError> for Error {
             SessionError::AuthenticationError(_) => Error::unauthenticated(err),
             SessionError::IoError(_) => Error::unavailable(err),
             SessionError::NotConnected => Error::unavailable(err),
+            SessionError::Timeout => Error::unavailable(err),
             SessionError::Packet(_) => Error::unimplemented(err),
         }
     }
@@ -183,8 +186,13 @@ impl Session {
             .forward(sink);
         let receiver_task = DispatchTask(stream, self.weak());
 
+        let session_clone = self.clone();
+        let timeout_task = async move {
+            session_clone.session_timeout().await
+        };
+
         tokio::spawn(async move {
-            let result = future::try_join(sender_task, receiver_task).await;
+            let result = future::try_join3(sender_task, receiver_task, timeout_task).await;
 
             if let Err(e) = result {
                 error!("{}", e);
@@ -234,18 +242,21 @@ impl Session {
 
     /// Returns, when we haven't received a ping for too long, which means
     /// that we silently lost connection to Spotify servers.
-    pub async fn session_timeout(&self) {
+    pub async fn session_timeout(&self) -> Result<(), Error> {
         // pings are sent every 2 minutes and a 5 second margin should be fine
         const SESSION_TIMEOUT: Duration = Duration::from_secs(125);
 
-        loop {
+        while !self.is_invalid() {
             let last_ping = self.0.data.read().last_ping.unwrap_or_else(Instant::now);
             if last_ping.elapsed() >= SESSION_TIMEOUT {
-                break;
+                self.shutdown();
+                // TODO: Optionally reconnect (with cached/last credentials?)
+                return Err(SessionError::Timeout.into());
             }
             // a potential timeout cannot occur at least until SESSION_TIMEOUT after the last_ping
             tokio::time::sleep_until(last_ping + SESSION_TIMEOUT).await;
         }
+        Ok(())
     }
 
     pub fn time_delta(&self) -> i64 {
