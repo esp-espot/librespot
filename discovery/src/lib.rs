@@ -48,6 +48,7 @@ pub struct Builder {
     server_config: server::Config,
     port: u16,
     zeroconf_ip: Vec<std::net::IpAddr>,
+    self_ip: Option<std::net::IpAddr>,
 }
 
 /// Errors that can occur while setting up a [`Discovery`] instance.
@@ -89,6 +90,7 @@ impl Builder {
             },
             port: 0,
             zeroconf_ip: vec![],
+            self_ip: None,
         }
     }
 
@@ -117,6 +119,11 @@ impl Builder {
         self
     }
 
+    pub fn self_ip(mut self, ip: Option<std::net::IpAddr>) -> Self {
+        self.self_ip = ip;
+        self
+    }
+
     /// Sets up the [`Discovery`] instance.
     ///
     /// # Errors
@@ -142,15 +149,15 @@ impl Builder {
 
         #[cfg(not(feature = "with-dns-sd"))]
         {
-            let _svc = if !_zeroconf_ip.is_empty() {
-                libmdns::Responder::spawn_with_ip_list(
-                    &tokio::runtime::Handle::current(),
-                    _zeroconf_ip,
-                )?
-            } else {
-                libmdns::Responder::spawn(&tokio::runtime::Handle::current())?
-            };
-            svc = _svc.register(
+            let (responder, task) = libmdns::Responder::with_default_handle_extended(
+                _zeroconf_ip,
+                self.self_ip.map(|ip| if let Some(std::net::IpAddr::V4(v4)) = ip { ip }),
+                self.self_ip.map(|ip| if let Some(std::net::IpAddr::V6(v6)) = ip { ip }),
+            )?;
+
+            &tokio::runtime::Handle::current().spawn(task);
+
+            svc = responder.register(
                 "_spotify-connect._tcp".to_owned(),
                 name,
                 port,
