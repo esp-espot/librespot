@@ -20,6 +20,7 @@ path = "src/lib.rs"
 name = "librespot"
 path = "src/main.rs"
 doc = false
+required-features = ["rpassword"]
 
 [dependencies.librespot-audio]
 path = "audio"
@@ -55,11 +56,11 @@ futures-util = { version = "0.3", default_features = false }
 getopts = "0.2"
 hex = "0.4"
 log = "0.4"
-rpassword = "7.0"
+rpassword = { version = "7.0", optional = true }
 sha1 = "0.10"
 sysinfo = { version = "0.29", default-features = false }
 thiserror = "1.0"
-tokio = { version = "1", features = ["rt", "macros", "signal", "sync", "parking_lot", "process"] }
+tokio = { version = "1", features = ["rt", "macros","sync", "parking_lot"] }
 url = "2.2"
 
 [features]
