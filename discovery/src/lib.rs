@@ -151,8 +151,8 @@ impl Builder {
         {
             let (responder, task) = libmdns::Responder::with_default_handle_extended(
                 _zeroconf_ip,
-                self.self_ip.map(|ip| if let Some(std::net::IpAddr::V4(v4)) = ip { ip }),
-                self.self_ip.map(|ip| if let Some(std::net::IpAddr::V6(v6)) = ip { ip }),
+                self.self_ip.and_then(|ip| if let std::net::IpAddr::V4(v4) = ip { Some(v4) } else { None }),
+                self.self_ip.and_then(|ip| if let std::net::IpAddr::V6(v6) = ip { Some(v6) } else { None }),
             )?;
 
             &tokio::runtime::Handle::current().spawn(task);
